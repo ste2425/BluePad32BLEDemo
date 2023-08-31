@@ -17,7 +17,7 @@ export async function btConnect(logger) {
         const device = await navigator.bluetooth.requestDevice(
             {
                 filters: [{
-                    namePrefix: 'Delayed'
+                    name: 'BluePad'
                 }],
                 optionalServices: [primaryServiceUUID]
             }
@@ -78,7 +78,7 @@ export async function sendValue(value, logger) {
     
     logger.log(`Sending value: ${value}`);
 
-    await characteristic.writeValueWithoutResponse(value);
+    await characteristic.writeValueWithResponse(value);
 
     logger.log('Sent');
 }
