@@ -7,8 +7,10 @@
 */
 #include "ble.h"
 
-TaskHandle_t ble_setup_task_handler;
-static btstack_context_callback_registration_t btstack_main_thread_task_handler;
+// BLE Connection related handlers
+TaskHandle_t ble_setup_core_0_handler; // Run on Core 0
+static btstack_context_callback_registration_t btstack_main_thread_connection_handler; // Run BTStack main
+
 static uint16_t att_read_callback(hci_con_handle_t con_handle, uint16_t att_handle, uint16_t offset, uint8_t * buffer, uint16_t buffer_size);
 static int att_write_callback(hci_con_handle_t connection_handle, uint16_t att_handle, uint16_t transaction_mode, uint16_t offset, uint8_t *buffer, uint16_t buffer_size);
 
@@ -30,17 +32,30 @@ void ble_setup(OnReadCallback onRead, OnWriteCallback onWrite) {
 
   // Run the BLE setup code on core 0
   xTaskCreatePinnedToCore(
-      ble_setup_task, /* Function to implement the task */
+      ble_setup_core0_task, /* Function to implement the task */
       "Task1", /* Name of the task */
       10000,  /* Stack size in words */
       NULL,  /* Task input parameter */
       0,  /* Priority of the task */
-      &ble_setup_task_handler,  /* Task handle. */
+      &ble_setup_core_0_handler,  /* Task handle. */
       0 /* Core where the task should run */
     );
 }
 
-void ble_setup_task(void * parameter) {
+// When running BTStack code we need to run in core 0 and in the BTStack main thread
+// To do this we first run a task on core0 then from that task use btstack_run_loop_execute_on_main_thread
+// To run code on BTStacks main thread.
+void ble_setup_core0_task(void * parameter) {
+  btstack_main_thread_connection_handler.callback = &ble_setup_btstackmain_task;
+  btstack_run_loop_execute_on_main_thread(&btstack_main_thread_connection_handler);
+  
+  // Tasks being run on another core cannot return a value
+  // The task either needs to be deleted when it has done its job
+  // Or run forever with an infinite loop
+  vTaskDelete(ble_setup_core_0_handler);
+}
+
+void ble_setup_btstackmain_task(void * parameter) {
   printf("Setting up ATT Server");
   printf("On core: %d\n", xPortGetCoreID());
 
@@ -57,13 +72,10 @@ void ble_setup_task(void * parameter) {
   gap_advertisements_set_params(adv_int_min, adv_int_max, adv_type, 0, null_addr, 0x07, 0x00);
   gap_advertisements_set_data(adv_data_len, (uint8_t*) adv_data);
   gap_advertisements_enable(1);
-
-  // Tasks being run on another core cannot return a value
-  // The task either needs to be deleted when it has done its job
-  // Or run forever with an infinite loop
-  vTaskDelete(ble_setup_task_handler);
 }
 
+// Code executed by BTStacks handlers is thread safe
+// We *shouldnt* need to manually run code on core 0 or use btstack_run_loop_execute_on_main_thread in these handlers
 static uint16_t att_read_callback(hci_con_handle_t connection_handle, uint16_t att_handle, uint16_t offset, uint8_t * buffer, uint16_t buffer_size){
   UNUSED(connection_handle);
 
@@ -78,31 +90,17 @@ static uint16_t att_read_callback(hci_con_handle_t connection_handle, uint16_t a
   return 0;
 }
 
+// Code executed by BTStacks handlers is thread safe
+// We *shouldnt* need to manually run code on core 0 or use btstack_run_loop_execute_on_main_thread in these handlers
 static int att_write_callback(hci_con_handle_t connection_handle, uint16_t att_handle, uint16_t transaction_mode, uint16_t offset, uint8_t *buffer, uint16_t buffer_size){
   UNUSED(transaction_mode);
   UNUSED(offset);
   UNUSED(buffer_size);
   UNUSED(connection_handle);    
   
-  //BTStack recommends running write handlers within its own main thread.
-  // In the context of ESP32 this is a little confusing as the task will still run on core 0
-  // However executing the task directly without btstack_run_loop_execute_on_main_thread can lead to
-  // Intermittent memory realted errors
   if (att_handle == ATT_CHARACTERISTIC_0000FF11_0000_1000_8000_00805F9B34FB_01_VALUE_HANDLE) {
-    btstack_main_thread_task_handler.callback = &main_thread_task;
-    
-    // If the write callback bassed in the ble_setup method would also like the buffer size
-    // This is what would need to be changed. 
-    btstack_main_thread_task_handler.context = (void *)buffer;
-    btstack_run_loop_execute_on_main_thread(&btstack_main_thread_task_handler);
+    onWriteCallback(buffer);
   }
 
   return 0;
-}
-
-// This still runs on core 0 even though btstack_run_loop_execute_on_main_thread may suggest core 1
-static void main_thread_task(void* context) {
-  uint8_t* ctx = (uint8_t*)context;
-
-  onWriteCallback(ctx);
 }
